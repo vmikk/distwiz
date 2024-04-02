@@ -13,66 +13,59 @@ import (
 )
 
 func main() {
-	inputPath, outputPath, compressLevel := parseFlags()
+	// Parse command-line arguments
+	inputPath := flag.String("input", "", "Path to the input file containing the sparse distance matrix.")
+	outputPath := flag.String("output", "", "Path to the output gzip-compressed file.")
+	compressLevel := flag.Int("compresslevel", 4, "GZIP compression level (1-9). Default is 4.")
+	flag.Parse()
 
-	distances, labels, err := readSparseMatrix(inputPath)
-	if err != nil {
-		log.Fatalf("Error reading sparse matrix: %v", err)
+	// Validate arguments
+	if *inputPath == "" || *outputPath == "" {
+		log.Fatal("Both input and output paths are required.")
 	}
 
-	if err := writeSquareMatrix(outputPath, distances, labels, compressLevel); err != nil {
+	labels, err := scanForLabels(*inputPath)
+	if err != nil {
+		log.Fatalf("Error scanning for labels: %v", err)
+	}
+
+	if err := writeSquareMatrix(*outputPath, *inputPath, labels, *compressLevel); err != nil {
 		log.Fatalf("Error writing square matrix: %v", err)
 	}
 }
 
-func parseFlags() (inputPath, outputPath string, compressLevel int) {
-	flag.StringVar(&inputPath, "input", "", "Path to the input file containing the sparse distance matrix.")
-	flag.StringVar(&outputPath, "output", "", "Path to the output gzip-compressed file.")
-	flag.IntVar(&compressLevel, "compresslevel", 4, "GZIP compression level (1-9). Default is 4.")
-	flag.Parse()
-
-	if inputPath == "" || outputPath == "" {
-		log.Fatal("Both input and output paths are required.")
-	}
-	return
-}
-
-func readSparseMatrix(inputPath string) (map[[2]string]float64, []string, error) {
-	distances := make(map[[2]string]float64)
+// Scan the input file for all unique labels.
+func scanForLabels(inputPath string) ([]string, error) {
 	labelsSet := make(map[string]struct{})
-
 	file, err := os.Open(inputPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open input file: %w", err)
+		return nil, fmt.Errorf("failed to open input file: %w", err)
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		parts := strings.Fields(scanner.Text())
-		if len(parts) != 3 {
-			return nil, nil, fmt.Errorf("invalid input format. Each line must contain two labels and a distance")
+		if len(parts) < 2 {
+			continue // Skip invalid lines
 		}
-		label1, label2, distance := parts[0], parts[1], parts[2]
-		dist, err := strconv.ParseFloat(distance, 64)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to parse distance '%s' as float: %w", distance, err)
-		}
-		distances[[2]string{label1, label2}] = dist
-		labelsSet[label1] = struct{}{}
-		labelsSet[label2] = struct{}{}
+		labelsSet[parts[0]] = struct{}{}
+		labelsSet[parts[1]] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading file: %w", err)
 	}
 
-	var labels []string
+	labels := make([]string, 0, len(labelsSet))
 	for label := range labelsSet {
 		labels = append(labels, label)
 	}
 	sort.Strings(labels)
-
-	return distances, labels, nil
+	return labels, nil
 }
 
-func writeSquareMatrix(outputPath string, distances map[[2]string]float64, labels []string, compressLevel int) error {
+// Write the square matrix by processing each label.
+func writeSquareMatrix(outputPath, inputPath string, labels []string, compressLevel int) error {
 	file, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
@@ -88,24 +81,64 @@ func writeSquareMatrix(outputPath string, distances map[[2]string]float64, label
 	writer := bufio.NewWriter(gz)
 	defer writer.Flush()
 
+	// Write header
 	if _, err := writer.WriteString(strings.Join(labels, "\t") + "\n"); err != nil {
-		return fmt.Errorf("failed to write header to output file: %w", err)
+		return fmt.Errorf("failed to write to output file: %w", err)
 	}
 
 	for _, label1 := range labels {
-		var row []string
-		for _, label2 := range labels {
-			distance := 1.0 // Default distance
-			if label1 == label2 {
-				distance = 0.0
-			} else if dist, found := distances[[2]string{label1, label2}]; found {
-				distance = dist
-			}
-			row = append(row, fmt.Sprintf("%.1f", distance))
-		}
-		if _, err := writer.WriteString(strings.Join(row, "\t") + "\n"); err != nil {
-			return fmt.Errorf("failed to write row to output file: %w", err)
+		if err := writeRow(writer, inputPath, label1, labels); err != nil {
+			return err // Error already wrapped
 		}
 	}
+
+	return nil
+}
+
+// Write a single row of the square matrix for a specific label.
+func writeRow(writer *bufio.Writer, inputPath, label1 string, labels []string) error {
+	distances := make(map[string]float64)
+	file, err := os.Open(inputPath)
+	if err != nil {
+		return fmt.Errorf("failed to open input file for reading distances: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) != 3 {
+			continue // Skip invalid lines
+		}
+		if parts[0] == label1 || parts[1] == label1 {
+			dist, err := strconv.ParseFloat(parts[2], 64)
+			if err != nil {
+				continue // Skip lines with invalid distances
+			}
+			if parts[0] == label1 {
+				distances[parts[1]] = dist
+			} else {
+				distances[parts[0]] = dist
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading distances for label %s: %w", label1, err)
+	}
+
+	var row []string
+	for _, label2 := range labels {
+		if label1 == label2 {
+			row = append(row, "0.0")
+		} else if dist, found := distances[label2]; found {
+			row = append(row, fmt.Sprintf("%.1f", dist))
+		} else {
+			row = append(row, "1.0") // Default distance
+		}
+	}
+	if _, err := writer.WriteString(strings.Join(row, "\t") + "\n"); err != nil {
+		return fmt.Errorf("failed to write row for label %s: %w", label1, err)
+	}
+
 	return nil
 }
