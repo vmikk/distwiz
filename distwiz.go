@@ -142,7 +142,7 @@ func writeRow(writer *bufio.Writer, inputPath, label1 string, labels []string) e
 		if label1 == label2 {
 			row = append(row, "0.0")
 		} else if dist, found := distances[label2]; found {
-			row = append(row, fmt.Sprintf("%.1f", dist))
+			row = append(row, fmt.Sprintf("%g", dist))
 		} else {
 			row = append(row, "1.0") // Default distance
 		}
@@ -242,7 +242,7 @@ func writeRowInMemory(writer *bufio.Writer, label1 string, labels []string, data
 		}
 
 		if dist, found := data[label1][label2]; found {
-			row = append(row, fmt.Sprintf("%.1f", dist))
+			row = append(row, fmt.Sprintf("%g", dist))
 		} else {
 			row = append(row, "1.0") // Default distance if not found
 		}
