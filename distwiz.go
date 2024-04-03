@@ -19,6 +19,7 @@ func main() {
 	// Parse command-line arguments
 	inputPath := flag.String("input", "", "Path to the input file containing the sparse distance matrix.")
 	outputPath := flag.String("output", "", "Path to the output gzip-compressed file.")
+	processingMode := flag.String("mode", "auto", "Processing mode: auto, mem, or disk. Default is auto.")
 	compressLevel := flag.Int("compresslevel", 4, "GZIP compression level (1-9). Default is 4.")
 	flag.Parse()
 
@@ -32,8 +33,16 @@ func main() {
 		log.Fatalf("Error scanning for labels: %v", err)
 	}
 
+	// Determine processing method
+	useDiskBased := false
+	if *processingMode == "auto" {
+		useDiskBased = len(labels) > LargeNThreshold
+	} else if *processingMode == "disk" {
+		useDiskBased = true
+	}
+
 	// Choose processing method based on the number of labels
-	if len(labels) > LargeNThreshold {
+	if useDiskBased {
 		if err := writeSquareMatrix(*outputPath, *inputPath, labels, *compressLevel); err != nil {
 			log.Fatalf("Error writing square matrix: %v", err)
 		}
@@ -42,6 +51,7 @@ func main() {
 			log.Fatalf("Error writing square matrix using in-memory method: %v", err)
 		}
 	}
+
 }
 
 // Scan the input file for all unique labels
